@@ -21,17 +21,17 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/golang/protobuf/proto"   //lint:ignore SA1019 we have to import these because some of their types appear in exported API
-	"google.golang.org/protobuf/reflect/protoreflect"
 	"github.com/jhump/protoreflect/v2/protoprint"
-	"google.golang.org/protobuf/types/dynamicpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	xdsCredentials "google.golang.org/grpc/credentials/xds"
 	_ "google.golang.org/grpc/health" // import grpc/health to enable transparent client side checking
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/protobuf/proto"
 	protov2 "google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/dynamicpb"
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -64,32 +64,32 @@ func GetAllFiles(source DescriptorSource) ([]protoreflect.FileDescriptor, error)
 	var firstError error
 	if ok {
 		files, firstError = srcFiles.GetAllFiles()
+	} else {
+		// Source does not implement GetAllFiles method, so use ListServices
+		// and grab files from there.
+		svcNames, err := source.ListServices()
+		if err != nil {
+			firstError = err
 		} else {
-			// Source does not implement GetAllFiles method, so use ListServices
-			// and grab files from there.
-			svcNames, err := source.ListServices()
-			if err != nil {
-				firstError = err
-			} else {
-				allFiles := map[string]protoreflect.FileDescriptor{}
-				for _, name := range svcNames {
-					d, err := source.FindSymbol(name)
-					if err != nil {
-						if firstError == nil {
-							firstError = err
-						}
-					} else {
-						addAllFilesToSet(d.ParentFile(), allFiles)
+			allFiles := map[string]protoreflect.FileDescriptor{}
+			for _, name := range svcNames {
+				d, err := source.FindSymbol(name)
+				if err != nil {
+					if firstError == nil {
+						firstError = err
 					}
-				}
-				files = make([]protoreflect.FileDescriptor, len(allFiles))
-				i := 0
-				for _, fd := range allFiles {
-					files[i] = fd
-					i++
+				} else {
+					addAllFilesToSet(d.ParentFile(), allFiles)
 				}
 			}
+			files = make([]protoreflect.FileDescriptor, len(allFiles))
+			i := 0
+			for _, fd := range allFiles {
+				files[i] = fd
+				i++
+			}
 		}
+	}
 
 	sort.Sort(filesByName(files))
 	return files, firstError
@@ -280,12 +280,11 @@ func GetDescriptorText(dsc protoreflect.Descriptor, _ DescriptorSource) (string,
 func EnsureExtensions(source DescriptorSource, msg proto.Message) proto.Message {
 	// For v2, we'll use dynamicpb directly since the extension handling is different
 	// This is a simplified version - in practice, you might need more complex extension handling
-	// We need to convert from v1 proto.Message to v2 protoreflect.ProtoMessage
 	if v2Msg, ok := msg.(interface{ ProtoReflect() protoreflect.Message }); ok {
 		dsc := v2Msg.ProtoReflect().Descriptor()
 		return dynamicpb.NewMessage(dsc)
 	}
-	// Fallback for v1 messages
+	// Fallback for messages that don't implement ProtoReflect
 	return msg
 }
 

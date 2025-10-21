@@ -5,7 +5,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/golang/protobuf/proto" //lint:ignore SA1019 we have to import this because it appears in exported API
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
 )
 
