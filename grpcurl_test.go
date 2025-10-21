@@ -11,9 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/golang/protobuf/jsonpb"  //lint:ignore SA1019 we have to import these because some of their types appear in exported API
-	"github.com/golang/protobuf/proto"   //lint:ignore SA1019 same as above
-	"google.golang.org/protobuf/reflect/protoreflect"
 	"github.com/jhump/protoreflect/v2/grpcreflect"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -21,6 +18,9 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/reflection"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 
 	. "github.com/fullstorydev/grpcurl"
 	grpcurl_testing "github.com/fullstorydev/grpcurl/internal/testing"
@@ -504,13 +504,14 @@ func doTestServerStream(t *testing.T, cc *grpc.ClientConn, source DescriptorSour
 			{Size: 10}, {Size: 20}, {Size: 30}, {Size: 40}, {Size: 50},
 		},
 	}
-	payload, err := (&jsonpb.Marshaler{}).MarshalToString(req)
+	payload, err := protojson.MarshalOptions{}.Marshal(req)
 	if err != nil {
 		t.Fatalf("failed to construct request: %v", err)
 	}
+	payloadStr := string(payload)
 
 	// Success
-	h := &handler{reqMessages: []string{payload}}
+	h := &handler{reqMessages: []string{payloadStr}}
 	err = InvokeRpc(context.Background(), source, cc, "testing.TestService/StreamingOutputCall", makeHeaders(codes.OK), h, h.getRequestData)
 	if err != nil {
 		t.Fatalf("unexpected error during RPC: %v", err)
@@ -519,7 +520,7 @@ func doTestServerStream(t *testing.T, cc *grpc.ClientConn, source DescriptorSour
 	if h.check(t, "testing.TestService.StreamingOutputCall", codes.OK, 1, 5) {
 		resp := &grpcurl_testing.StreamingOutputCallResponse{}
 		for i, msg := range h.respMessages {
-			if err := jsonpb.UnmarshalString(msg, resp); err != nil {
+			if err := protojson.Unmarshal([]byte(msg), resp); err != nil {
 				t.Errorf("failed to parse response %d: %v", i+1, err)
 			}
 			if resp.Payload.GetType() != grpcurl_testing.PayloadType_COMPRESSABLE {
@@ -533,7 +534,7 @@ func doTestServerStream(t *testing.T, cc *grpc.ClientConn, source DescriptorSour
 	}
 
 	// Fail fast (server rejects as soon as possible)
-	h = &handler{reqMessages: []string{payload}}
+	h = &handler{reqMessages: []string{payloadStr}}
 	err = InvokeRpc(context.Background(), source, cc, "testing.TestService/StreamingOutputCall", makeHeaders(codes.Aborted), h, h.getRequestData)
 	if err != nil {
 		t.Fatalf("unexpected error during RPC: %v", err)
@@ -542,7 +543,7 @@ func doTestServerStream(t *testing.T, cc *grpc.ClientConn, source DescriptorSour
 	h.check(t, "testing.TestService.StreamingOutputCall", codes.Aborted, 1, 0)
 
 	// Fail late (server waits until stream is complete to reject)
-	h = &handler{reqMessages: []string{payload}}
+	h = &handler{reqMessages: []string{payloadStr}}
 	err = InvokeRpc(context.Background(), source, cc, "testing.TestService/StreamingOutputCall", makeHeaders(codes.AlreadyExists, true), h, h.getRequestData)
 	if err != nil {
 		t.Fatalf("unexpected error during RPC: %v", err)
@@ -611,11 +612,11 @@ func doTestFullDuplexStream(t *testing.T, cc *grpc.ClientConn, source Descriptor
 	}
 	for i := range reqs {
 		req.ResponseParameters = append(req.ResponseParameters, &grpcurl_testing.ResponseParameters{Size: int32((i + 1) * 10)})
-		payload, err := (&jsonpb.Marshaler{}).MarshalToString(req)
+		payload, err := protojson.MarshalOptions{}.Marshal(req)
 		if err != nil {
 			t.Fatalf("failed to construct request %d: %v", i, err)
 		}
-		reqs[i] = payload
+		reqs[i] = string(payload)
 	}
 
 	// Success
@@ -633,7 +634,7 @@ func doTestFullDuplexStream(t *testing.T, cc *grpc.ClientConn, source Descriptor
 			for k := 0; k < j; k++ {
 				// 1 response for first request, 2 for second, etc
 				msg := h.respMessages[i]
-				if err := jsonpb.UnmarshalString(msg, resp); err != nil {
+				if err := protojson.Unmarshal([]byte(msg), resp); err != nil {
 					t.Errorf("failed to parse response %d: %v", i+1, err)
 				}
 				if resp.Payload.GetType() != grpcurl_testing.PayloadType_RANDOM {
@@ -714,11 +715,12 @@ func (h *handler) OnReceiveHeaders(md metadata.MD) {
 }
 
 func (h *handler) OnReceiveResponse(msg proto.Message) {
-	jsm := jsonpb.Marshaler{Indent: "  "}
-	respStr, err := jsm.MarshalToString(msg)
+	opts := protojson.MarshalOptions{Indent: "  "}
+	respBytes, err := opts.Marshal(msg)
 	if err != nil {
 		panic(fmt.Errorf("failed to generate JSON form of response message: %v", err))
 	}
+	respStr := string(respBytes)
 	h.respMessages = append(h.respMessages, respStr)
 }
 

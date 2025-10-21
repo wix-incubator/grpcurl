@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/golang/protobuf/jsonpb"  //lint:ignore SA1019 we have to import these because some of their types appear in exported API
-	"github.com/golang/protobuf/proto"   //lint:ignore SA1019 same as above
-	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
@@ -204,12 +204,12 @@ func compare(actual, expected string) bool {
 
 func makeProto() (proto.Message, error) {
 	var rsp structpb.Value
-	err := jsonpb.UnmarshalString(`{
+	err := protojson.Unmarshal([]byte(`{
 		"foo": ["abc", "def", "ghi"],
 		"bar": { "a": 1, "b": 2 },
 		"baz": true,
 		"null": null
-	}`, &rsp)
+	}`), &rsp)
 	if err != nil {
 		return nil, err
 	}

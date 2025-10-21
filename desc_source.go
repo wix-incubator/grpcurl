@@ -9,13 +9,13 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/golang/protobuf/proto"              //lint:ignore SA1019 we have to import these because some of their types appear in exported API
-	"google.golang.org/protobuf/reflect/protoreflect"
-	"google.golang.org/protobuf/types/descriptorpb"
-	"github.com/jhump/protoreflect/v2/protoprint"
 	"github.com/jhump/protoreflect/v2/grpcreflect"
+	"github.com/jhump/protoreflect/v2/protoprint"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/descriptorpb"
 )
 
 // ErrReflectionNotSupported is returned by DescriptorSource operations that
@@ -62,14 +62,14 @@ func DescriptorSourceFromProtoFiles(importPaths []string, fileNames ...string) (
 	// For now, we'll use a simplified approach that requires the proto files to be compiled
 	// In a full implementation, you would use a proto parser to parse .proto source files
 	// and convert them to FileDescriptorProto instances, then use Registry.FromFileDescriptorSet
-	
+
 	// This is a placeholder implementation - in practice, you'd need to:
 	// 1. Parse the .proto source files using a proto parser
 	// 2. Convert them to FileDescriptorProto instances
 	// 3. Create a FileDescriptorSet from those protos
 	// 4. Use Registry.FromFileDescriptorSet to create a registry
 	// 5. Extract the FileDescriptor instances from the registry
-	
+
 	return nil, fmt.Errorf("proto file parsing not yet implemented in v2 migration - requires proto parser integration")
 }
 
@@ -194,7 +194,7 @@ func (ss serverSource) FindSymbol(fullyQualifiedName string) (protoreflect.Descr
 	if err != nil {
 		return nil, reflectionSupport(err)
 	}
-	
+
 	// Find the specific symbol within the file descriptor
 	return findSymbolInFile(desc, fullyQualifiedName)
 }
@@ -205,7 +205,7 @@ func (ss serverSource) AllExtensionsForType(typeName string) ([]protoreflect.Fie
 	if err != nil {
 		return nil, reflectionSupport(err)
 	}
-	
+
 	var extensions []protoreflect.FieldDescriptor
 	for _, extNum := range extNums {
 		// Get the file containing the extension
@@ -213,20 +213,20 @@ func (ss serverSource) AllExtensionsForType(typeName string) ([]protoreflect.Fie
 		if err != nil {
 			continue // Skip if we can't find the extension
 		}
-		
+
 		// Find the extension field in the file
 		// This is a simplified approach - in practice, you'd need to search through the file
 		// to find the extension field with the matching number
 		_ = fd // TODO: Implement proper extension field lookup
 	}
-	
+
 	return extensions, nil
 }
 
 // findSymbolInFile searches for a symbol within a file descriptor
 func findSymbolInFile(fd protoreflect.FileDescriptor, symbolName string) (protoreflect.Descriptor, error) {
 	targetName := protoreflect.FullName(symbolName)
-	
+
 	// Search in messages
 	for i := 0; i < fd.Messages().Len(); i++ {
 		msg := fd.Messages().Get(i)
@@ -238,7 +238,7 @@ func findSymbolInFile(fd protoreflect.FileDescriptor, symbolName string) (protor
 			return desc, nil
 		}
 	}
-	
+
 	// Search in services
 	for i := 0; i < fd.Services().Len(); i++ {
 		svc := fd.Services().Get(i)
@@ -253,7 +253,7 @@ func findSymbolInFile(fd protoreflect.FileDescriptor, symbolName string) (protor
 			}
 		}
 	}
-	
+
 	// Search in enums
 	for i := 0; i < fd.Enums().Len(); i++ {
 		enum := fd.Enums().Get(i)
@@ -268,7 +268,7 @@ func findSymbolInFile(fd protoreflect.FileDescriptor, symbolName string) (protor
 			}
 		}
 	}
-	
+
 	return nil, fmt.Errorf("symbol %q not found", symbolName)
 }
 
@@ -284,7 +284,7 @@ func findSymbolInMessage(msg protoreflect.MessageDescriptor, targetName protoref
 			return desc
 		}
 	}
-	
+
 	// Search in nested enums
 	for i := 0; i < msg.Enums().Len(); i++ {
 		enum := msg.Enums().Get(i)
@@ -298,7 +298,7 @@ func findSymbolInMessage(msg protoreflect.MessageDescriptor, targetName protoref
 			}
 		}
 	}
-	
+
 	return nil
 }
 
