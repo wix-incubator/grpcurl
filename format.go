@@ -12,9 +12,11 @@ import (
 	"sync"
 
 	"github.com/golang/protobuf/jsonpb"     //lint:ignore SA1019 we have to import these because some of their types appear in exported API
-	"github.com/golang/protobuf/proto"      //lint:ignore SA1019 same as above
-	"github.com/jhump/protoreflect/desc"    //lint:ignore SA1019 same as above
-	"github.com/jhump/protoreflect/dynamic" //lint:ignore SA1019 same as above
+	"github.com/golang/protobuf/proto"       //lint:ignore SA1019 same as above
+	protov2 "google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/encoding/prototext"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/dynamicpb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -26,7 +28,7 @@ type RequestParser interface {
 	// input is exhausted, it returns io.EOF. If the caller re-uses the same
 	// instance in multiple calls to Next, it should call msg.Reset() in between
 	// each call.
-	Next(msg proto.Message) error
+	Next(msg protov2.Message) error
 	// NumRequests returns the number of messages that have been parsed and
 	// returned by a call to Next.
 	NumRequests() int
@@ -64,13 +66,34 @@ func NewJSONRequestParserWithUnmarshaler(in io.Reader, unmarshaler jsonpb.Unmars
 	}
 }
 
-func (f *jsonRequestParser) Next(m proto.Message) error {
+func (f *jsonRequestParser) Next(m protov2.Message) error {
 	var msg json.RawMessage
 	if err := f.dec.Decode(&msg); err != nil {
 		return err
 	}
 	f.requestCount++
-	return f.unmarshaler.Unmarshal(bytes.NewReader(msg), m)
+	
+	// Convert v2 message to v1 for jsonpb unmarshaler
+	if v1Msg, ok := m.(interface{ ProtoReflect() protoreflect.Message }); ok {
+		// Create a v1 message for jsonpb
+		v1ProtoMsg := dynamicpb.NewMessage(v1Msg.ProtoReflect().Descriptor())
+		// Copy data from v2 to v1
+		if data, err := protov2.Marshal(v1Msg); err == nil {
+			protov2.Unmarshal(data, v1ProtoMsg)
+		}
+		
+		// Unmarshal JSON into v1 message
+		if err := f.unmarshaler.Unmarshal(bytes.NewReader(msg), v1ProtoMsg); err != nil {
+			return err
+		}
+		
+		// Copy data back from v1 to v2
+		if data, err := protov2.Marshal(v1ProtoMsg); err == nil {
+			protov2.Unmarshal(data, m)
+		}
+		return nil
+	}
+	return fmt.Errorf("cannot convert message to v1 proto.Message")
 }
 
 func (f *jsonRequestParser) NumRequests() int {
@@ -102,7 +125,7 @@ func NewTextRequestParser(in io.Reader) RequestParser {
 	return &textRequestParser{r: bufio.NewReader(in)}
 }
 
-func (f *textRequestParser) Next(m proto.Message) error {
+func (f *textRequestParser) Next(m protov2.Message) error {
 	if f.err != nil {
 		return f.err
 	}
@@ -119,7 +142,7 @@ func (f *textRequestParser) Next(m proto.Message) error {
 
 	f.requestCount++
 
-	return proto.UnmarshalText(string(b), m)
+	return prototext.Unmarshal([]byte(string(b)), m)
 }
 
 func (f *textRequestParser) NumRequests() int {
@@ -127,7 +150,7 @@ func (f *textRequestParser) NumRequests() int {
 }
 
 // Formatter translates messages into string representations.
-type Formatter func(proto.Message) (string, error)
+type Formatter func(protov2.Message) (string, error)
 
 // NewJSONFormatter returns a formatter that returns JSON strings. The JSON will
 // include empty/default values (instead of just omitted them) if emitDefaults
@@ -143,16 +166,26 @@ func NewJSONFormatter(emitDefaults bool, resolver jsonpb.AnyResolver) Formatter 
 	// but later re-introduced before the module was deprecated and frozen.
 	// If jsonpb is ever replaced with google.golang.org/protobuf/encoding/protojson
 	// this workaround will no longer be needed.
-	formatter := func(message proto.Message) (string, error) {
-		output, err := marshaler.MarshalToString(message)
-		if err != nil {
-			return "", err
+	formatter := func(message protov2.Message) (string, error) {
+		// Convert v2 message to v1 for jsonpb
+		if v1Msg, ok := message.(interface{ ProtoReflect() protoreflect.Message }); ok {
+			// Create a v1 message for jsonpb
+			v1ProtoMsg := dynamicpb.NewMessage(v1Msg.ProtoReflect().Descriptor())
+			// Copy data from v2 to v1
+			if data, err := protov2.Marshal(v1Msg); err == nil {
+				protov2.Unmarshal(data, v1ProtoMsg)
+			}
+			output, err := marshaler.MarshalToString(v1ProtoMsg)
+			if err != nil {
+				return "", err
+			}
+			var buf bytes.Buffer
+			if err := json.Indent(&buf, []byte(output), "", "  "); err != nil {
+				return "", err
+			}
+			return buf.String(), nil
 		}
-		var buf bytes.Buffer
-		if err := json.Indent(&buf, []byte(output), "", "  "); err != nil {
-			return "", err
-		}
-		return buf.String(), nil
+		return "", fmt.Errorf("cannot convert message to v1 proto.Message")
 	}
 	return formatter
 }
@@ -173,43 +206,39 @@ type textFormatter struct {
 
 var protoTextMarshaler = proto.TextMarshaler{ExpandAny: true}
 
-func (tf *textFormatter) format(m proto.Message) (string, error) {
-	var buf bytes.Buffer
-	if tf.useSeparator && tf.numFormatted > 0 {
-		if err := buf.WriteByte(textSeparatorChar); err != nil {
-			return "", err
+func (tf *textFormatter) format(m protov2.Message) (string, error) {
+		// Convert v2 message to v1 for proto.TextMarshaler
+		if v1Msg, ok := m.(interface{ ProtoReflect() protoreflect.Message }); ok {
+			// Create a v1 message for proto.TextMarshaler
+			v1ProtoMsg := dynamicpb.NewMessage(v1Msg.ProtoReflect().Descriptor())
+			// Copy data from v2 to v1
+			if data, err := protov2.Marshal(v1Msg); err == nil {
+				protov2.Unmarshal(data, v1ProtoMsg)
+			}
+			
+			var buf bytes.Buffer
+			if tf.useSeparator && tf.numFormatted > 0 {
+				if err := buf.WriteByte(textSeparatorChar); err != nil {
+					return "", err
+				}
+			}
+
+			// For dynamic messages, we'll just use the standard marshaler
+			if err := protoTextMarshaler.Marshal(&buf, v1ProtoMsg); err != nil {
+				return "", err
+			}
+
+			// no trailing newline needed
+			str := buf.String()
+			if len(str) > 0 && str[len(str)-1] == '\n' {
+				str = str[:len(str)-1]
+			}
+
+			tf.numFormatted++
+
+			return str, nil
 		}
-	}
-
-	// If message implements MarshalText method (such as a *dynamic.Message),
-	// it won't get details about whether or not to format to text compactly
-	// or with indentation. So first see if the message also implements a
-	// MarshalTextIndent method and use that instead if available.
-	type indentMarshaler interface {
-		MarshalTextIndent() ([]byte, error)
-	}
-
-	if indenter, ok := m.(indentMarshaler); ok {
-		b, err := indenter.MarshalTextIndent()
-		if err != nil {
-			return "", err
-		}
-		if _, err := buf.Write(b); err != nil {
-			return "", err
-		}
-	} else if err := protoTextMarshaler.Marshal(&buf, m); err != nil {
-		return "", err
-	}
-
-	// no trailing newline needed
-	str := buf.String()
-	if len(str) > 0 && str[len(str)-1] == '\n' {
-		str = str[:len(str)-1]
-	}
-
-	tf.numFormatted++
-
-	return str, nil
+		return "", fmt.Errorf("cannot convert message to v1 proto.Message")
 }
 
 // Format of request data. The allowed values are 'json' or 'text'.
@@ -248,10 +277,7 @@ func AnyResolverFromDescriptorSourceWithFallback(source DescriptorSource) jsonpb
 type anyResolver struct {
 	source DescriptorSource
 
-	er dynamic.ExtensionRegistry
-
 	mu       sync.RWMutex
-	mf       *dynamic.MessageFactory
 	resolved map[string]func() proto.Message
 }
 
@@ -285,23 +311,13 @@ func (r *anyResolver) Resolve(typeUrl string) (proto.Message, error) {
 	if err != nil {
 		return nil, err
 	}
-	md, ok := d.(*desc.MessageDescriptor)
+	md, ok := d.(protoreflect.MessageDescriptor)
 	if !ok {
 		return nil, fmt.Errorf("unknown message: %s", typeUrl)
 	}
-	// populate any extensions for this message, too (if there are any)
-	if exts, err := r.source.AllExtensionsForType(mname); err == nil {
-		if err := r.er.AddExtension(exts...); err != nil {
-			return nil, err
-		}
-	}
-
-	if r.mf == nil {
-		r.mf = dynamic.NewMessageFactoryWithExtensionRegistry(&r.er)
-	}
 
 	factory = func() proto.Message {
-		return r.mf.NewMessage(md)
+		return dynamicpb.NewMessage(md)
 	}
 	if r.resolved == nil {
 		r.resolved = map[string]func() proto.Message{}
@@ -471,7 +487,7 @@ func NewDefaultEventHandler(out io.Writer, descSource DescriptorSource, formatte
 
 var _ InvocationEventHandler = (*DefaultEventHandler)(nil)
 
-func (h *DefaultEventHandler) OnResolveMethod(md *desc.MethodDescriptor) {
+func (h *DefaultEventHandler) OnResolveMethod(md protoreflect.MethodDescriptor) {
 	if h.VerbosityLevel > 0 {
 		txt, err := GetDescriptorText(md, nil)
 		if err == nil {
@@ -492,10 +508,10 @@ func (h *DefaultEventHandler) OnReceiveHeaders(md metadata.MD) {
 	}
 }
 
-func (h *DefaultEventHandler) OnReceiveResponse(resp proto.Message) {
+func (h *DefaultEventHandler) OnReceiveResponse(resp protov2.Message) {
 	h.NumResponses++
 	if h.VerbosityLevel > 1 {
-		fmt.Fprintf(h.Out, "\nEstimated response size: %d bytes\n", proto.Size(resp))
+		fmt.Fprintf(h.Out, "\nEstimated response size: %d bytes\n", protov2.Size(resp))
 	}
 	if h.VerbosityLevel > 0 {
 		fmt.Fprint(h.Out, "\nResponse contents:\n")

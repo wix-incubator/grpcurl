@@ -9,7 +9,7 @@ import (
 
 	"github.com/golang/protobuf/jsonpb"  //lint:ignore SA1019 we have to import these because some of their types appear in exported API
 	"github.com/golang/protobuf/proto"   //lint:ignore SA1019 same as above
-	"github.com/jhump/protoreflect/desc" //lint:ignore SA1019 same as above
+	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/types/known/structpb"
 )
@@ -105,7 +105,7 @@ func TestHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to find method 'TestService.GetFiles': %v", err)
 	}
-	md, ok := d.(*desc.MethodDescriptor)
+	md, ok := d.(protoreflect.MethodDescriptor)
 	if !ok {
 		t.Fatalf("wrong kind of descriptor found: %T", d)
 	}

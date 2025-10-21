@@ -15,8 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jhump/protoreflect/desc" //lint:ignore SA1019 required to use APIs in other grpcurl package
-	"github.com/jhump/protoreflect/grpcreflect"
+	"github.com/jhump/protoreflect/v2/grpcreflect"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
@@ -24,7 +23,7 @@ import (
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/descriptorpb"
+	"google.golang.org/protobuf/reflect/protoreflect"
 
 	// Register gzip compressor so compressed responses will work
 	_ "google.golang.org/grpc/encoding/gzip"
@@ -254,7 +253,7 @@ func (cs compositeSource) ListServices() ([]string, error) {
 	return cs.reflection.ListServices()
 }
 
-func (cs compositeSource) FindSymbol(fullyQualifiedName string) (desc.Descriptor, error) {
+func (cs compositeSource) FindSymbol(fullyQualifiedName string) (protoreflect.Descriptor, error) {
 	d, err := cs.reflection.FindSymbol(fullyQualifiedName)
 	if err == nil {
 		return d, nil
@@ -262,16 +261,16 @@ func (cs compositeSource) FindSymbol(fullyQualifiedName string) (desc.Descriptor
 	return cs.file.FindSymbol(fullyQualifiedName)
 }
 
-func (cs compositeSource) AllExtensionsForType(typeName string) ([]*desc.FieldDescriptor, error) {
+func (cs compositeSource) AllExtensionsForType(typeName string) ([]protoreflect.FieldDescriptor, error) {
 	exts, err := cs.reflection.AllExtensionsForType(typeName)
 	if err != nil {
 		// On error fall back to file source
 		return cs.file.AllExtensionsForType(typeName)
 	}
 	// Track the tag numbers from the reflection source
-	tags := make(map[int32]bool)
+	tags := make(map[protoreflect.FieldNumber]bool)
 	for _, ext := range exts {
-		tags[ext.GetNumber()] = true
+		tags[ext.Number()] = true
 	}
 	fileExts, err := cs.file.AllExtensionsForType(typeName)
 	if err != nil {
@@ -279,7 +278,7 @@ func (cs compositeSource) AllExtensionsForType(typeName string) ([]*desc.FieldDe
 	}
 	for _, ext := range fileExts {
 		// Prioritize extensions found via reflection
-		if !tags[ext.GetNumber()] {
+		if !tags[ext.Number()] {
 			exts = append(exts, ext)
 		}
 	}
@@ -609,7 +608,6 @@ func main() {
 		refCtx := metadata.NewOutgoingContext(ctx, md)
 		cc = dial()
 		refClient = grpcreflect.NewClientAuto(refCtx, cc)
-		refClient.AllowMissingFileDescriptors()
 		reflSource := grpcurl.DescriptorSourceFromServer(ctx, refClient)
 		if fileSource != nil {
 			descSource = compositeSource{reflSource, fileSource}
@@ -702,16 +700,17 @@ func main() {
 				fail(err, "Failed to resolve symbol %q", s)
 			}
 
-			fqn := dsc.GetFullyQualifiedName()
+			fqn := string(dsc.FullName())
 			var elementType string
 			switch d := dsc.(type) {
-			case *desc.MessageDescriptor:
+			case protoreflect.MessageDescriptor:
 				elementType = "a message"
-				parent, ok := d.GetParent().(*desc.MessageDescriptor)
-				if ok {
+				parent := d.Parent()
+				if parentMsg, ok := parent.(protoreflect.MessageDescriptor); ok {
 					if d.IsMapEntry() {
-						for _, f := range parent.GetFields() {
-							if f.IsMap() && f.GetMessageType() == d {
+						for i := 0; i < parentMsg.Fields().Len(); i++ {
+							f := parentMsg.Fields().Get(i)
+							if f.IsMap() && f.Message() == d {
 								// found it: describe the map field instead
 								elementType = "the entry type for a map field"
 								dsc = f
@@ -720,9 +719,10 @@ func main() {
 						}
 					} else {
 						// see if it's a group
-						for _, f := range parent.GetFields() {
-							if f.GetType() == descriptorpb.FieldDescriptorProto_TYPE_GROUP && f.GetMessageType() == d {
-								// found it: describe the map field instead
+						for i := 0; i < parentMsg.Fields().Len(); i++ {
+							f := parentMsg.Fields().Get(i)
+							if f.Kind() == protoreflect.GroupKind && f.Message() == d {
+								// found it: describe the group field instead
 								elementType = "the type of a group field"
 								dsc = f
 								break
@@ -730,22 +730,22 @@ func main() {
 						}
 					}
 				}
-			case *desc.FieldDescriptor:
+			case protoreflect.FieldDescriptor:
 				elementType = "a field"
-				if d.GetType() == descriptorpb.FieldDescriptorProto_TYPE_GROUP {
+				if d.Kind() == protoreflect.GroupKind {
 					elementType = "a group field"
 				} else if d.IsExtension() {
 					elementType = "an extension"
 				}
-			case *desc.OneOfDescriptor:
+			case protoreflect.OneofDescriptor:
 				elementType = "a one-of"
-			case *desc.EnumDescriptor:
+			case protoreflect.EnumDescriptor:
 				elementType = "an enum"
-			case *desc.EnumValueDescriptor:
+			case protoreflect.EnumValueDescriptor:
 				elementType = "an enum value"
-			case *desc.ServiceDescriptor:
+			case protoreflect.ServiceDescriptor:
 				elementType = "a service"
-			case *desc.MethodDescriptor:
+			case protoreflect.MethodDescriptor:
 				elementType = "a method"
 			default:
 				err = fmt.Errorf("descriptor has unrecognized type %T", dsc)
@@ -759,7 +759,7 @@ func main() {
 			fmt.Printf("%s is %s:\n", fqn, elementType)
 			fmt.Println(txt)
 
-			if dsc, ok := dsc.(*desc.MessageDescriptor); ok && *msgTemplate {
+			if dsc, ok := dsc.(protoreflect.MessageDescriptor); ok && *msgTemplate {
 				// for messages, also show a template in JSON, to make it easier to
 				// create a request to invoke an RPC
 				tmpl := grpcurl.MakeTemplate(dsc)
