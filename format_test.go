@@ -2,6 +2,7 @@ package grpcurl
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -307,3 +308,115 @@ Response contents:
 >
 `
 )
+
+func TestConvertFieldMaskFormat(t *testing.T) {
+	testCases := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "simple field mask",
+			input:    `{"field_mask":{"paths":["collections"]}}`,
+			expected: `{"field_mask":"collections"}`,
+		},
+		{
+			name:     "field mask with multiple paths",
+			input:    `{"field_mask":{"paths":["field1","field2","field3"]}}`,
+			expected: `{"field_mask":"field1,field2,field3"}`,
+		},
+		{
+			name:     "nested field mask",
+			input:    `{"request":{"field_mask":{"paths":["name","email"]},"other":"value"}}`,
+			expected: `{"request":{"field_mask":"name,email","other":"value"}}`,
+		},
+		{
+			name:     "field mask in array",
+			input:    `{"items":[{"field_mask":{"paths":["a","b"]}}]}`,
+			expected: `{"items":[{"field_mask":"a,b"}]}`,
+		},
+		{
+			name:     "empty field mask",
+			input:    `{"field_mask":{"paths":[]}}`,
+			expected: `{"field_mask":""}`,
+		},
+		{
+			name:     "no field mask",
+			input:    `{"other":"value"}`,
+			expected: `{"other":"value"}`,
+		},
+		{
+			name:     "already canonical format",
+			input:    `{"field_mask":"field1,field2"}`,
+			expected: `{"field_mask":"field1,field2"}`,
+		},
+		{
+			name:     "object with paths but not a field mask",
+			input:    `{"config":{"paths":["a","b"],"type":"file"}}`,
+			expected: `{"config":{"paths":["a","b"],"type":"file"}}`,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := convertFieldMaskFormat([]byte(tc.input))
+
+			// Compare as JSON objects to ignore formatting differences
+			var resultObj, expectedObj interface{}
+			if err := json.Unmarshal(result, &resultObj); err != nil {
+				t.Fatalf("failed to unmarshal result: %v", err)
+			}
+			if err := json.Unmarshal([]byte(tc.expected), &expectedObj); err != nil {
+				t.Fatalf("failed to unmarshal expected: %v", err)
+			}
+
+			resultJSON, _ := json.Marshal(resultObj)
+			expectedJSON, _ := json.Marshal(expectedObj)
+
+			if string(resultJSON) != string(expectedJSON) {
+				t.Errorf("incorrect conversion:\nexpected: %s\ngot:      %s", expectedJSON, resultJSON)
+			}
+		})
+	}
+}
+
+// TestFieldMaskIntegration tests that FieldMask conversion works with actual protobuf unmarshaling
+func TestFieldMaskIntegration(t *testing.T) {
+	// Create a test message that contains a FieldMask field
+	type TestMessage struct {
+		FieldMask string `json:"fieldMask"`
+		Name      string `json:"name"`
+	}
+
+	// Test with old format
+	oldFormatJSON := `{"fieldMask":{"paths":["field1","field2"]},"name":"test"}`
+	converted := convertFieldMaskFormat([]byte(oldFormatJSON))
+
+	var result TestMessage
+	if err := json.Unmarshal(converted, &result); err != nil {
+		t.Fatalf("failed to unmarshal converted JSON: %v", err)
+	}
+
+	if result.FieldMask != "field1,field2" {
+		t.Errorf("expected fieldMask to be 'field1,field2', got '%s'", result.FieldMask)
+	}
+	if result.Name != "test" {
+		t.Errorf("expected name to be 'test', got '%s'", result.Name)
+	}
+
+	// Test with canonical format (should pass through unchanged)
+	canonicalJSON := `{"fieldMask":"field3,field4","name":"test2"}`
+	converted = convertFieldMaskFormat([]byte(canonicalJSON))
+
+	var result2 TestMessage
+	if err := json.Unmarshal(converted, &result2); err != nil {
+		t.Fatalf("failed to unmarshal converted JSON: %v", err)
+	}
+
+	if result2.FieldMask != "field3,field4" {
+		t.Errorf("expected fieldMask to be 'field3,field4', got '%s'", result2.FieldMask)
+	}
+	if result2.Name != "test2" {
+		t.Errorf("expected name to be 'test2', got '%s'", result2.Name)
+	}
+}

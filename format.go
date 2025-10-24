@@ -33,8 +33,9 @@ type RequestParser interface {
 }
 
 type jsonRequestParser struct {
-	dec          *json.Decoder
-	requestCount int
+	dec           *json.Decoder
+	requestCount  int
+	unmarshalOpts protojson.UnmarshalOptions
 }
 
 // NewJSONRequestParser returns a RequestParser that reads data in JSON format
@@ -62,6 +63,14 @@ func NewJSONRequestParserWithUnmarshaler(in io.Reader, unmarshaler interface{}) 
 	}
 }
 
+// newJSONRequestParserWithOptions creates a JSON request parser with custom unmarshal options.
+func newJSONRequestParserWithOptions(in io.Reader, opts protojson.UnmarshalOptions) RequestParser {
+	return &jsonRequestParser{
+		dec:           json.NewDecoder(in),
+		unmarshalOpts: opts,
+	}
+}
+
 func (f *jsonRequestParser) Next(m proto.Message) error {
 	var msg json.RawMessage
 	if err := f.dec.Decode(&msg); err != nil {
@@ -69,12 +78,91 @@ func (f *jsonRequestParser) Next(m proto.Message) error {
 	}
 	f.requestCount++
 
+	// Convert old-style FieldMask format to new canonical format
+	msg = convertFieldMaskFormat(msg)
+
 	// Use protojson for v2 JSON unmarshaling
-	return protojson.Unmarshal(msg, m)
+	return f.unmarshalOpts.Unmarshal(msg, m)
 }
 
 func (f *jsonRequestParser) NumRequests() int {
 	return f.requestCount
+}
+
+// convertFieldMaskFormat converts old-style FieldMask JSON format to the new canonical format.
+// Old format: {"paths": ["field1", "field2"]} -> New format: "field1,field2"
+// This maintains backward compatibility with grpcurl behavior prior to protoreflect v2 migration.
+func convertFieldMaskFormat(data []byte) []byte {
+	// Parse the JSON to find and convert FieldMask fields
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		// If it's not a JSON object, return as-is
+		return data
+	}
+
+	converted := convertFieldMaskInMap(raw)
+	if !converted {
+		// No FieldMask found, return original
+		return data
+	}
+
+	// Re-marshal with the converted FieldMask
+	result, err := json.Marshal(raw)
+	if err != nil {
+		// If re-marshaling fails, return original
+		return data
+	}
+	return result
+}
+
+// convertFieldMaskInMap recursively converts FieldMask objects to string format.
+// Returns true if any conversion was made.
+func convertFieldMaskInMap(obj map[string]interface{}) bool {
+	converted := false
+	for key, value := range obj {
+		switch v := value.(type) {
+		case map[string]interface{}:
+			// Check if this looks like a FieldMask: has a "paths" field with an array
+			if paths, ok := v["paths"].([]interface{}); ok && len(v) == 1 {
+				// Convert paths array to comma-separated string
+				pathStrings := make([]string, 0, len(paths))
+				allStrings := true
+				for _, p := range paths {
+					if str, ok := p.(string); ok {
+						pathStrings = append(pathStrings, str)
+					} else {
+						allStrings = false
+						break
+					}
+				}
+				if allStrings {
+					// This is a FieldMask, convert it
+					obj[key] = strings.Join(pathStrings, ",")
+					converted = true
+				} else {
+					// Recurse into nested object
+					if convertFieldMaskInMap(v) {
+						converted = true
+					}
+				}
+			} else {
+				// Recurse into nested object
+				if convertFieldMaskInMap(v) {
+					converted = true
+				}
+			}
+		case []interface{}:
+			// Recurse into array elements that are objects
+			for _, item := range v {
+				if itemMap, ok := item.(map[string]interface{}); ok {
+					if convertFieldMaskInMap(itemMap) {
+						converted = true
+					}
+				}
+			}
+		}
+	}
+	return converted
 }
 
 const (
@@ -361,7 +449,10 @@ func RequestParserAndFormatter(format Format, descSource DescriptorSource, in io
 	switch format {
 	case FormatJSON:
 		resolver := AnyResolverFromDescriptorSource(descSource)
-		return NewJSONRequestParserWithUnmarshaler(in, resolver), NewJSONFormatter(opts.EmitJSONDefaultFields, anyResolverWithFallback{AnyResolver: resolver}), nil
+		unmarshalOpts := protojson.UnmarshalOptions{
+			DiscardUnknown: opts.AllowUnknownFields,
+		}
+		return newJSONRequestParserWithOptions(in, unmarshalOpts), NewJSONFormatter(opts.EmitJSONDefaultFields, anyResolverWithFallback{AnyResolver: resolver}), nil
 	case FormatText:
 		return NewTextRequestParser(in), NewTextFormatter(opts.IncludeTextSeparator), nil
 	default:
